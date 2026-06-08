@@ -1,43 +1,45 @@
 import os
 
-# Cargar variables de entorno desde .env si está disponible.
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-# Importar clientes si están instalados.
-try:
-    from anthropic import Anthropic
-except ImportError:
-    Anthropic = None
+from anthropic import Anthropic
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
+client = Anthropic()
+app = FastAPI()
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-anthropic_client = None
-if Anthropic and ANTHROPIC_API_KEY:
-    anthropic_client = Anthropic()
+class ChatRequest(BaseModel):
+    message: str
 
-openai_client = None
-if OpenAI and OPENAI_API_KEY:
-    openai_client = OpenAI()
+
+@app.get("/")
+def root():
+    return {"mensaje": "Servidor funcionando. Usa POST /chat para hablar con Claude."}
+
+
+@app.post("/chat")
+def chat(body: ChatRequest):
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+
+    response = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": body.message}],
+    )
+    return {"respuesta": response.content[0].text}
+
 
 if __name__ == "__main__":
-    if not anthropic_client:
-        print("Error: ANTHROPIC_API_KEY no configurada o librería no instalada.")
-    else:
-        response = anthropic_client.messages.create(
-            model="claude-opus-4-8",
-            max_tokens=1024,
-            messages=[
-                {"role": "user", "content": "Hola, ¿cómo estás?"}
-            ],
-        )
-        print(response.content[0].text)
+    response = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "Hola, ¿qué es la inteligencia artificial?"}],
+    )
+    print(response.content[0].text)
