@@ -30,7 +30,14 @@ if OpenAI and OPENAI_API_KEY:
     openai_client = OpenAI()
 
 if __name__ == "__main__":
-    print("ANTHROPIC_API_KEY presente:", bool(ANTHROPIC_API_KEY))
-    print("OPENAI_API_KEY presente:", bool(OPENAI_API_KEY))
-    print("anthropic_client creado:", anthropic_client is not None)
-    print("openai_client creado:", openai_client is not None)
+    if not anthropic_client:
+        print("Error: ANTHROPIC_API_KEY no configurada o librería no instalada.")
+    else:
+        response = anthropic_client.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": "Hola, ¿cómo estás?"}
+            ],
+        )
+        print(response.content[0].text)
