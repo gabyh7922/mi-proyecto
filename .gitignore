@@ -1,7 +1,10 @@
 .env
 .secrets
+.DS_Store
+
+# Python-generated files
 __pycache__/
-*.pyc# Python-generated files
+*.pyc
 __pycache__/
 *.py[oc]
 build/
