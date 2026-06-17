@@ -85,6 +85,24 @@ curl -X POST http://localhost:8000/api/v1/estimate \
 }
 ```
 
+## Interfaz conversacional (Streamlit)
+
+Además del endpoint, hay una interfaz de chat web que reutiliza la misma lógica
+y system prompt CAG, con respuesta en **streaming** (token a token):
+
+```bash
+uv run streamlit run streamlit_app.py
+```
+
+Se abre en http://localhost:8501. Funcionalidades:
+
+- **Chat** (`st.chat_input` / `st.chat_message`): pega la transcripción y recibe la estimación.
+- **Historial** en `st.session_state`: la conversación persiste durante la sesión y puedes pedir ajustes en mensajes siguientes (multi-turno).
+- **Streaming**: la estimación se "escribe" en tiempo real con `st.write_stream`.
+- **Panel lateral** con visibilidad del CAG: system prompt activo, ejemplos de contexto inyectados y métricas de la última llamada (modelo, tokens de entrada/salida, tiempo).
+
+> La API key se lee desde `.env` (vía Pydantic Settings), nunca está en el código.
+
 ## Cómo funciona la arquitectura CAG aquí
 
 1. `context/examples.py` define ejemplos de estimaciones previas (el "conocimiento").
