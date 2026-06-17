@@ -1,11 +1,12 @@
-"""Servicio de llamada al LLM (corazón de la arquitectura CAG).
+"""Servicio de llamada al LLM (arquitectura CAG, interfaz de producto).
 
-El contexto estático (ejemplos de estimaciones previas) se inyecta directamente
-en el system prompt: viaja en cada llamada, sin base de datos ni retrieval.
+El prompt vive en el backend: se compone con `build_system_prompt(request)` a
+partir de los parámetros tipados (EstimationRequest) y el contexto estático CAG.
+El usuario solo aporta parámetros, no el prompt.
 
 Patrón de mensajes:
-    [system]    -> instrucciones + ejemplos de estimaciones previas
-    [user]      -> transcripción de la reunión a estimar
+    [system]    -> instrucciones (plantilla) + ejemplos de referencia (CAG)
+    [user]      -> descripción del proyecto
     [assistant] -> (respuesta del modelo: la estimación)
 """
 
@@ -13,82 +14,14 @@ import time
 from collections.abc import Iterator
 
 from app.config import Settings, get_settings
-from app.context.examples import ESTIMATION_EXAMPLES
+from app.prompts.estimation import build_system_prompt, build_user_content
+from app.schemas.estimation import EstimationRequest
 
 # Precios por millón de tokens (USD) de los modelos económicos del ejercicio.
 PRICING = {
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
 }
-
-
-def _build_system_prompt() -> str:
-    """Construye el system prompt inyectando los ejemplos de contexto (CAG)."""
-    examples_text = "\n\n".join(
-        f"### Ejemplo {i}\n"
-        f"**Resumen de la reunión:**\n{ex['meeting_summary']}\n\n"
-        f"**Estimación generada:**\n{ex['estimation']}"
-        for i, ex in enumerate(ESTIMATION_EXAMPLES, start=1)
-    )
-
-    return f"""Eres un estimador de software senior con amplia experiencia en proyectos \
-de desarrollo web, móvil y backend. Tu tarea es generar estimaciones de esfuerzo \
-realistas a partir de la transcripción de una reunión con un cliente.
-
-Cómo debes trabajar:
-- Básate en los ejemplos de estimaciones previas que se incluyen más abajo: sigue \
-su mismo formato, nivel de detalle y criterio.
-- Desglosa el trabajo en tareas concretas con horas estimadas.
-- Incluye un total de horas, el equipo recomendado y una duración estimada.
-- Si la transcripción no aporta algún dato clave (alcance, plazos, integraciones), \
-indica explícitamente los supuestos que estás asumiendo.
-- Señala al menos un riesgo no obvio que el equipo suele pasar por alto.
-- Responde en español y en formato Markdown, sin frases de relleno.
-
-A continuación tienes tu base de conocimiento: estimaciones previas de referencia.
-
-{examples_text}
-"""
-
-
-def _generate_openai(system_prompt: str, transcription: str, settings: Settings) -> dict:
-    from openai import OpenAI
-
-    client = OpenAI(api_key=settings.openai_api_key)
-    response = client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": transcription},
-        ],
-        temperature=0.3,
-    )
-    return _build_result(
-        estimation=response.choices[0].message.content,
-        model=settings.openai_model,
-        provider="openai",
-        input_tokens=response.usage.prompt_tokens,
-        output_tokens=response.usage.completion_tokens,
-    )
-
-
-def _generate_anthropic(system_prompt: str, transcription: str, settings: Settings) -> dict:
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=1500,
-        system=system_prompt,
-        messages=[{"role": "user", "content": transcription}],
-    )
-    return _build_result(
-        estimation=response.content[0].text,
-        model=settings.anthropic_model,
-        provider="anthropic",
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-    )
 
 
 def _build_result(estimation, model, provider, input_tokens, output_tokens) -> dict:
@@ -110,47 +43,72 @@ def _build_result(estimation, model, provider, input_tokens, output_tokens) -> d
     }
 
 
-def generate_estimation(transcription: str) -> dict:
-    """Genera una estimación de software a partir de una transcripción de reunión."""
+def generate_estimation(request: EstimationRequest) -> dict:
+    """Genera una estimación (no streaming) a partir de parámetros tipados."""
     settings = get_settings()
-    system_prompt = _build_system_prompt()
+    system_prompt = build_system_prompt(request)
+    user_content = build_user_content(request)
 
     if settings.llm_provider == "openai":
         if not settings.openai_api_key:
             raise RuntimeError("Falta OPENAI_API_KEY en el entorno (.env).")
-        return _generate_openai(system_prompt, transcription, settings)
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=1500,
+            temperature=0.3,
+        )
+        return _build_result(
+            estimation=response.choices[0].message.content,
+            model=settings.openai_model,
+            provider="openai",
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+        )
 
     if settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key:
             raise RuntimeError("Falta ANTHROPIC_API_KEY en el entorno (.env).")
-        return _generate_anthropic(system_prompt, transcription, settings)
+        from anthropic import Anthropic
+
+        client = Anthropic(api_key=settings.anthropic_api_key)
+        response = client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=1500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return _build_result(
+            estimation=response.content[0].text,
+            model=settings.anthropic_model,
+            provider="anthropic",
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
 
     raise ValueError(
         f"Proveedor no soportado: {settings.llm_provider!r}. Usa 'openai' o 'anthropic'."
     )
 
 
-# Acceso público al system prompt (lo usa la interfaz Streamlit para mostrarlo).
-def build_system_prompt() -> str:
-    """Devuelve el system prompt CAG (mismo que usa el endpoint)."""
-    return _build_system_prompt()
-
-
 def stream_estimation(
-    messages: list[dict],
+    request: EstimationRequest,
     metadata: dict | None = None,
 ) -> Iterator[str]:
-    """Genera la estimación en streaming (token a token).
+    """Genera la estimación en streaming (token a token) desde parámetros tipados.
 
-    Reutiliza el mismo system prompt CAG que el endpoint. Acepta el historial
-    completo de la conversación (`messages` con roles user/assistant) para
-    soportar refinamiento multi-turno.
-
-    Va emitiendo fragmentos de texto. Si se pasa `metadata`, al terminar se
-    rellena con: model, provider, input_tokens, output_tokens, elapsed_s.
+    Va emitiendo fragmentos de texto. Si se pasa `metadata`, al terminar se rellena
+    con: model, provider, input_tokens, output_tokens, elapsed_s.
     """
     settings = get_settings()
-    system_prompt = _build_system_prompt()
+    system_prompt = build_system_prompt(request)
+    user_content = build_user_content(request)
     start = time.time()
 
     if settings.llm_provider == "anthropic":
@@ -163,7 +121,7 @@ def stream_estimation(
             model=settings.anthropic_model,
             max_tokens=1500,
             system=system_prompt,
-            messages=messages,
+            messages=[{"role": "user", "content": user_content}],
         ) as stream:
             yield from stream.text_stream
             final = stream.get_final_message()
@@ -185,7 +143,10 @@ def stream_estimation(
         client = OpenAI(api_key=settings.openai_api_key)
         stream = client.chat.completions.create(
             model=settings.openai_model,
-            messages=[{"role": "system", "content": system_prompt}, *messages],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
             max_tokens=1500,
             stream=True,
             stream_options={"include_usage": True},
