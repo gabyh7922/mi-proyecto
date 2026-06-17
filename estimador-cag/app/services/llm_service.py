@@ -9,6 +9,9 @@ Patrón de mensajes:
     [assistant] -> (respuesta del modelo: la estimación)
 """
 
+import time
+from collections.abc import Iterator
+
 from app.config import Settings, get_settings
 from app.context.examples import ESTIMATION_EXAMPLES
 
@@ -121,6 +124,87 @@ def generate_estimation(transcription: str) -> dict:
         if not settings.anthropic_api_key:
             raise RuntimeError("Falta ANTHROPIC_API_KEY en el entorno (.env).")
         return _generate_anthropic(system_prompt, transcription, settings)
+
+    raise ValueError(
+        f"Proveedor no soportado: {settings.llm_provider!r}. Usa 'openai' o 'anthropic'."
+    )
+
+
+# Acceso público al system prompt (lo usa la interfaz Streamlit para mostrarlo).
+def build_system_prompt() -> str:
+    """Devuelve el system prompt CAG (mismo que usa el endpoint)."""
+    return _build_system_prompt()
+
+
+def stream_estimation(
+    messages: list[dict],
+    metadata: dict | None = None,
+) -> Iterator[str]:
+    """Genera la estimación en streaming (token a token).
+
+    Reutiliza el mismo system prompt CAG que el endpoint. Acepta el historial
+    completo de la conversación (`messages` con roles user/assistant) para
+    soportar refinamiento multi-turno.
+
+    Va emitiendo fragmentos de texto. Si se pasa `metadata`, al terminar se
+    rellena con: model, provider, input_tokens, output_tokens, elapsed_s.
+    """
+    settings = get_settings()
+    system_prompt = _build_system_prompt()
+    start = time.time()
+
+    if settings.llm_provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise RuntimeError("Falta ANTHROPIC_API_KEY en el entorno (.env).")
+        from anthropic import Anthropic
+
+        client = Anthropic(api_key=settings.anthropic_api_key)
+        with client.messages.stream(
+            model=settings.anthropic_model,
+            max_tokens=1500,
+            system=system_prompt,
+            messages=messages,
+        ) as stream:
+            yield from stream.text_stream
+            final = stream.get_final_message()
+        if metadata is not None:
+            metadata.update(
+                model=settings.anthropic_model,
+                provider="anthropic",
+                input_tokens=final.usage.input_tokens,
+                output_tokens=final.usage.output_tokens,
+                elapsed_s=round(time.time() - start, 2),
+            )
+        return
+
+    if settings.llm_provider == "openai":
+        if not settings.openai_api_key:
+            raise RuntimeError("Falta OPENAI_API_KEY en el entorno (.env).")
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        stream = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[{"role": "system", "content": system_prompt}, *messages],
+            max_tokens=1500,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        usage = None
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+        if metadata is not None:
+            metadata.update(
+                model=settings.openai_model,
+                provider="openai",
+                input_tokens=usage.prompt_tokens if usage else None,
+                output_tokens=usage.completion_tokens if usage else None,
+                elapsed_s=round(time.time() - start, 2),
+            )
+        return
 
     raise ValueError(
         f"Proveedor no soportado: {settings.llm_provider!r}. Usa 'openai' o 'anthropic'."
