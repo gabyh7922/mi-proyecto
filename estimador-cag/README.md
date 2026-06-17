@@ -120,3 +120,33 @@ contiene la descripción, que `phases_table` activa las columnas correctas (y
 
 El usuario aporta parámetros tipados; `render_estimation_prompt()` los inyecta en
 las plantillas; el endpoint llama al LLM con `system` y `user` **separados**.
+
+## Sesión 5 — Memoria conversacional y contexto enriquecido
+
+Estimación **conversacional** con memoria de sesión y adjuntos, además del endpoint por formulario.
+
+### Endpoints nuevos
+- `POST /api/v1/sessions` → crea una sesión y devuelve `{"session_id": "..."}` (UUID v4).
+- `POST /api/v1/sessions/{session_id}/estimate` → `multipart/form-data` con:
+  - `transcript` (texto)
+  - `attachments` (lista opcional de PDF/Word)
+  Devuelve la estimación + el `project_metadata` actualizado.
+
+### Memoria: historial vs project_metadata
+- **Historial** (`app/sessions.py::ConversationHistory`): el array de mensajes que viaja al LLM, con **ventana deslizante** (`MAX_TURNS=6` pares user+assistant). El system prompt es invariante y se regenera cada turno.
+- **project_metadata** (`ProjectMetadata`): hechos del proyecto (`project_name`, `assumed_team_size`, `mentioned_technologies`, `agreed_scope`). Vive aparte del historial y se inyecta en `<project_metadata>` del system prompt en cada turno.
+- Estado **en memoria del proceso** (dict por `session_id`), sin BBDD. Si el servicio se reinicia, las sesiones se pierden (volatilidad aceptada en esta fase).
+
+### Adjuntos — Camino B (extracción local)
+Elegido `pypdf` (PDF) + `python-docx` (Word) en `app/services/attachments.py`. Motivo: **independiente del proveedor**, control fino sobre qué texto entra al prompt, y prepara el chunking de RAG (módulo 3). El texto extraído se concatena al transcript con separador `--- attachment: nombre ---`.
+
+### Extracción de project_metadata — extractor LLM
+`app/services/metadata_extractor.py` hace una llamada extra (barata) que devuelve JSON y se **mergea** con la metadata actual (unión de tecnologías). Elegido frente a heurística regex por ser más robusto ante lenguaje natural variado y multilingüe. Si la extracción falla, se conserva la metadata previa.
+
+### Cliente
+`uv run streamlit run streamlit_app.py`: crea una sesión al cargar, campo de transcripción + selector múltiple de adjuntos, panel lateral con el `project_metadata` en vivo y botón "Nueva conversación".
+
+### Tests
+`uv run pytest` — incluye `tests/test_sessions.py`: (1) dos turnos enlazados actualizan el `project_metadata`, (2) el contenido de un adjunto llega al prompt, (3) la ventana deslizante nunca supera `MAX_TURNS`. Las llamadas al LLM se mockean (rápidos, sin coste).
+
+> **Fuera de alcance** (sesión en vivo): resumen acumulativo / anclas, tier dinámico, persistencia entre reinicios, y **búsqueda web + function calling a BBDD** (mecanismos 2 y 3 del artículo de contexto dinámico).

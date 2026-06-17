@@ -37,3 +37,20 @@ def render_estimation_prompt(
     }
 
     return system.render(**context), user.render(**context)
+
+
+def render_session_estimation_prompt(
+    metadata,
+    transcript: str,
+    version: str = "v1",
+) -> tuple[str, str]:
+    """Compone (system, user) para la estimación conversacional, inyectando el
+    project_metadata en el system prompt y el transcript en el user prompt.
+
+    `metadata` es un ProjectMetadata (se usa su .model_dump()).
+    """
+    system = _env.get_template(f"session_estimation/{version}/system.j2")
+    user = _env.get_template(f"session_estimation/{version}/user.j2")
+
+    context = {**metadata.model_dump(), "transcript": transcript}
+    return system.render(**context), user.render(**context)
