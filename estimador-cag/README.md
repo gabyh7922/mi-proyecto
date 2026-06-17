@@ -1,28 +1,37 @@
-# Estimador CAG — Proyecto 1 (FastAPI + Cache-Augmented Generation)
+# Estimador — Proyecto 1 (FastAPI + interfaz de producto)
 
-Servicio FastAPI que recibe la **transcripción de una reunión** y devuelve una
+Servicio FastAPI que recibe **parámetros tipados de un proyecto** y devuelve una
 **estimación de software** generada por un LLM.
 
-Arquitectura **CAG (Cache-Augmented Generation)**: todo el contexto que necesita
-el modelo (unos pocos ejemplos de estimaciones previas) viaja **dentro del prompt
-en cada llamada**. No hay base de datos, ni retrieval, ni persistencia.
+**Sesión 4 — del chat a la interfaz de producto:** el usuario ya no escribe un
+prompt en un textarea libre. Rellena un **formulario** con parámetros tipados
+(`project_type`, `detail_level`, `output_format`, `description`) y **el prompt se
+compone en el backend** a partir de plantillas **Jinja2 versionadas**. El prompt
+es un artefacto de software: vive en el repo, se versiona y se testea.
 
 ## Estructura
 
 ```
 estimador-cag/
 ├── app/
-│   ├── main.py              # App FastAPI + /health + router
-│   ├── config.py            # Configuración con Pydantic BaseSettings (.env)
+│   ├── main.py                       # App FastAPI + /health + router
+│   ├── config.py                     # Configuración Pydantic Settings (.env)
+│   ├── schemas.py                    # EstimationRequest/Response (Pydantic + Enums)
 │   ├── routers/
-│   │   └── estimations.py   # POST /api/v1/estimate (schemas request/response)
+│   │   └── estimations.py            # POST /api/v1/estimate (parámetros tipados)
 │   ├── services/
-│   │   └── llm_service.py   # Lógica CAG: system prompt + ejemplos + llamada al LLM
-│   └── context/
-│       └── examples.py      # Contexto estático: ejemplos de estimaciones previas
-├── transcripcion_ejemplo.txt
+│   │   └── llm_service.py            # run_estimation: render prompt + llamada al LLM
+│   └── prompts/
+│       ├── loader.py                 # render_estimation_prompt(request, version)
+│       └── estimation/v1/
+│           ├── system.j2             # rol + bloques condicionales (formato/detalle)
+│           ├── user.j2               # envuelve la descripción del usuario
+│           └── examples.j2           # few-shot (incluido en system con {% include %})
+├── tests/
+│   └── prompts/
+│       └── test_estimation_v1.py     # tests del template (sin tocar APIs)
+├── streamlit_app.py                  # interfaz de producto (st.form)
 ├── .env.example
-├── .gitignore
 ├── pyproject.toml
 └── README.md
 ```
@@ -35,83 +44,79 @@ estimador-cag/
 
 ## Configuración
 
-1. Copia el ejemplo de variables y rellena tus valores reales:
+```bash
+cp .env.example .env
+```
 
-   ```bash
-   cp .env.example .env
-   ```
+Edita `.env`:
 
-2. Edita `.env`:
+```env
+LLM_PROVIDER=anthropic        # o "openai"
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
 
-   ```env
-   LLM_PROVIDER=anthropic        # o "openai"
-   ANTHROPIC_API_KEY=sk-ant-...  # tu key real
-   OPENAI_API_KEY=sk-...         # (si usas openai)
-   ```
+> `.env` está en `.gitignore`: las keys nunca se suben al repo.
 
-   > `.env` está en `.gitignore`: las keys nunca se suben al repo.
-
-## Ejecutar
+## Levantar el servicio
 
 ```bash
 uv run uvicorn app.main:app --reload
 ```
 
-- Documentación Swagger: http://localhost:8000/docs
-- Health check: http://localhost:8000/health
+- Swagger: http://localhost:8000/docs
+- Health: http://localhost:8000/health
 
-## Probar el endpoint
+### Probar el endpoint
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/estimate \
   -H "Content-Type: application/json" \
   -d '{
-    "transcription": "En la reunión con el equipo de marketing, el cliente explicó que necesita una landing page con formulario de contacto, integración con su CRM actual (HubSpot), y una sección de blog con editor WYSIWYG. El plazo ideal sería 4 semanas. El diseño ya existe en Figma."
+    "description": "App móvil interna para que ventas registre visitas, con login, sync offline y push.",
+    "project_type": "mobile_app",
+    "detail_level": "detailed",
+    "output_format": "phases_table"
   }'
 ```
 
-(También puedes usar el contenido de [`transcripcion_ejemplo.txt`](transcripcion_ejemplo.txt).)
+Valores admitidos:
+- `project_type`: `mobile_app` · `web_saas` · `internal_tool` · `data_pipeline`
+- `detail_level`: `summary` · `medium` · `detailed`
+- `output_format`: `phases_table` · `line_items` · `narrative`
 
-### Respuesta de ejemplo
+Respuesta: `{ "text": "...", "prompt_version": "v1" }`.
 
-```json
-{
-  "estimation": "## Estimación: ...",
-  "model": "claude-haiku-4-5",
-  "provider": "anthropic",
-  "input_tokens": 812,
-  "output_tokens": 430,
-  "estimated_cost_usd": 0.002962
-}
-```
+> Bonus: el endpoint acepta `?prompt_version=v2` (query param) para seleccionar versión.
 
-## Interfaz conversacional (Streamlit)
-
-Además del endpoint, hay una interfaz de chat web que reutiliza la misma lógica
-y system prompt CAG, con respuesta en **streaming** (token a token):
+## Interfaz (Streamlit)
 
 ```bash
 uv run streamlit run streamlit_app.py
 ```
 
-Se abre en http://localhost:8501. Funcionalidades:
+Formulario con descripción + selectores. Al enviar compone un `EstimationRequest`,
+llama al servicio y muestra la estimación. El sidebar muestra el `system.j2` y
+`user.j2` renderizados según las selecciones actuales.
 
-- **Chat** (`st.chat_input` / `st.chat_message`): pega la transcripción y recibe la estimación.
-- **Historial** en `st.session_state`: la conversación persiste durante la sesión y puedes pedir ajustes en mensajes siguientes (multi-turno).
-- **Streaming**: la estimación se "escribe" en tiempo real con `st.write_stream`.
-- **Panel lateral** con visibilidad del CAG: system prompt activo, ejemplos de contexto inyectados y métricas de la última llamada (modelo, tokens de entrada/salida, tiempo).
+## Ejecutar los tests
 
-> La API key se lee desde `.env` (vía Pydantic Settings), nunca está en el código.
+```bash
+uv run pytest
+```
 
-## Cómo funciona la arquitectura CAG aquí
+Son **tests del template** (no del LLM): verifican que el prompt renderizado
+contiene la descripción, que `phases_table` activa las columnas correctas (y
+`narrative` no), y que `detailed` añade la instrucción de asunciones por fase (y
+`summary` no). Corren en milisegundos, sin coste de API.
 
-1. `context/examples.py` define ejemplos de estimaciones previas (el "conocimiento").
-2. `services/llm_service.py` los inyecta en el **system prompt** (few-shot).
-3. La **transcripción** del usuario va como mensaje `user`.
-4. El LLM devuelve la estimación, que el endpoint retorna como JSON.
+## Cómo funciona
 
 ```
-[system]    -> instrucciones + ejemplos de estimaciones previas
-[user]      -> transcripción de la reunión a estimar
-[assistant] -> estimación generada
+[system]  -> system.j2 (rol + bloques condicionales por formato/detalle + examples.j2)
+[user]    -> user.j2 (envuelve la descripción del proyecto)
+[assistant] -> estimación generada (texto libre)
 ```
+
+El usuario aporta parámetros tipados; `render_estimation_prompt()` los inyecta en
+las plantillas; el endpoint llama al LLM con `system` y `user` **separados**.
