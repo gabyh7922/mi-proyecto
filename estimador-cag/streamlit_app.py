@@ -1,23 +1,21 @@
-"""Interfaz de PRODUCTO (Streamlit) para el Estimador.
+"""Interfaz conversacional con memoria (Streamlit) — Sesión 5.
 
-Sesión 4 — "del chat a la interfaz de producto": el usuario rellena un
-formulario (st.form) que produce un EstimationRequest tipado; el backend compone
-el prompt con plantillas Jinja2 versionadas. La salida sigue siendo texto libre.
+- Crea una sesión al cargar y guarda el session_id en st.session_state.
+- Campo de transcripción + selector múltiple de adjuntos (PDF/Word).
+- Muestra el project_metadata actual en el sidebar (separación memoria/historial).
+- Botón "Nueva conversación" que crea otra sesión y resetea el estado.
 
-Ejecutar desde la raíz del proyecto:
+Llama al servicio de sesión en proceso (mismo proceso que Streamlit). Ejecutar:
     uv run streamlit run streamlit_app.py
 """
 
 import streamlit as st
-from pydantic import ValidationError
 
 from app.config import get_settings
-from app.prompts.loader import render_estimation_prompt
-from app.schemas import DetailLevel, EstimationRequest, OutputFormat, ProjectType
-from app.services.llm_service import run_estimation
+from app.services.session_service import estimate_in_session
+from app.sessions import create_session, get_session
 
-st.set_page_config(page_title="Estimador", page_icon="🧮", layout="wide")
-
+st.set_page_config(page_title="Estimador — memoria", page_icon="🧮", layout="wide")
 settings = get_settings()
 active_model = (
     settings.anthropic_model
@@ -25,75 +23,72 @@ active_model = (
     else settings.openai_model
 )
 
-# Etiqueta legible -> enum
-PROJECT_TYPE_LABELS = {
-    "Aplicación móvil": ProjectType.MOBILE_APP,
-    "Web / SaaS": ProjectType.WEB_SAAS,
-    "Herramienta interna": ProjectType.INTERNAL_TOOL,
-    "Pipeline de datos": ProjectType.DATA_PIPELINE,
-}
-DETAIL_LABELS = {
-    "Resumen": DetailLevel.SUMMARY,
-    "Medio": DetailLevel.MEDIUM,
-    "Detallado": DetailLevel.DETAILED,
-}
-FORMAT_LABELS = {
-    "Tabla por fases": OutputFormat.PHASES_TABLE,
-    "Lista de tareas": OutputFormat.LINE_ITEMS,
-    "Narrativa": OutputFormat.NARRATIVE,
-}
 
-st.title("🧮 Estimador de Software")
+def _new_session() -> str:
+    return create_session().session_id
+
+
+# Crear sesión al cargar
+if "session_id" not in st.session_state:
+    st.session_state.session_id = _new_session()
+
+session = get_session(st.session_state.session_id)
+if session is None:  # el proceso se reinició: creamos una nueva
+    st.session_state.session_id = _new_session()
+    session = get_session(st.session_state.session_id)
+
+# --- Sidebar: memoria del proyecto ---
+with st.sidebar:
+    st.header("🧠 Memoria del proyecto")
+    st.caption(f"session_id: `{session.session_id[:8]}…`")
+    st.write(f"Proveedor: **{settings.llm_provider}** · `{active_model}`")
+
+    md = session.metadata
+    st.subheader("project_metadata")
+    st.json(md.model_dump())
+
+    st.caption(f"Turnos en historial: {len(session.history.windowed_messages()) // 2} "
+               f"(ventana máx. {session.history.max_turns})")
+
+    if st.button("🆕 Nueva conversación", use_container_width=True):
+        st.session_state.session_id = _new_session()
+        st.rerun()
+
+# --- Cabecera ---
+st.title("🧮 Estimador conversacional")
 st.caption(
-    "Rellena el formulario y genera la estimación. El prompt lo compone el backend "
-    "a partir de tus parámetros (interfaz de producto, no chat libre)."
+    "Pega una transcripción (y adjunta documentación si quieres). El sistema recuerda "
+    "el proyecto en curso entre turnos y puedes ir refinando la estimación."
 )
 
-with st.form("estimation_form"):
-    description = st.text_area(
-        "Descripción del proyecto",
-        height=160,
-        placeholder="Describe el proyecto: alcance, integraciones, plazos… (mín. 20 caracteres)",
+# --- Historial de la conversación ---
+for m in session.history.windowed_messages():
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+# --- Entrada ---
+with st.form("turn_form", clear_on_submit=True):
+    transcript = st.text_area(
+        "Transcripción de la reunión / instrucción",
+        height=140,
+        placeholder="Ej.: El cliente quiere una app móvil de reservas… (o 'sube las horas de QA')",
     )
-    c1, c2, c3 = st.columns(3)
-    project_label = c1.selectbox("Tipo de proyecto", list(PROJECT_TYPE_LABELS))
-    detail_label = c2.selectbox("Nivel de detalle", list(DETAIL_LABELS), index=1)
-    format_label = c3.selectbox("Formato de salida", list(FORMAT_LABELS))
-    submitted = st.form_submit_button("⚡ Generar estimación", type="primary")
+    files = st.file_uploader(
+        "Adjuntos (PDF / Word, opcional)",
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True,
+    )
+    submitted = st.form_submit_button("⚡ Generar / refinar estimación", type="primary")
 
 if submitted:
-    try:
-        request = EstimationRequest(
-            description=description or "",
-            project_type=PROJECT_TYPE_LABELS[project_label],
-            detail_level=DETAIL_LABELS[detail_label],
-            output_format=FORMAT_LABELS[format_label],
-        )
-    except ValidationError:
-        st.warning("⚠️ La descripción debe tener entre 20 y 2000 caracteres.")
+    if not transcript or not transcript.strip():
+        st.warning("⚠️ Escribe una transcripción o instrucción.")
     else:
-        with st.spinner("Generando estimación…"):
+        attachments = [(f.name, f.getvalue()) for f in (files or [])]
+        with st.spinner("Generando estimación y actualizando memoria…"):
             try:
-                response = run_estimation(request)
+                estimate_in_session(session, transcript, attachments)
             except Exception as exc:  # noqa: BLE001
-                st.error(f"⚠️ Error al generar la estimación: {exc}")
+                st.error(f"⚠️ Error: {exc}")
             else:
-                st.subheader("Estimación")
-                st.markdown(response.text)
-                st.caption(f"prompt_version: `{response.prompt_version}`")
-
-# Panel lateral: vista previa del prompt compuesto según las selecciones
-with st.sidebar:
-    st.header("⚙️ Prompt (backend)")
-    st.write(f"Proveedor: **{settings.llm_provider}** · `{active_model}`")
-    preview = EstimationRequest.model_construct(
-        description="(vista previa)",
-        project_type=PROJECT_TYPE_LABELS[project_label],
-        detail_level=DETAIL_LABELS[detail_label],
-        output_format=FORMAT_LABELS[format_label],
-    )
-    system_preview, user_preview = render_estimation_prompt(preview)
-    with st.expander("system.j2 (renderizado)"):
-        st.code(system_preview)
-    with st.expander("user.j2 (renderizado)"):
-        st.code(user_preview)
+                st.rerun()  # refresca historial y project_metadata

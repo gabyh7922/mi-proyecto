@@ -2,19 +2,19 @@
 
 from fastapi import FastAPI
 
-from app.routers import estimations
+from app.routers import estimations, sessions
 
 app = FastAPI(
-    title="Estimador CAG",
+    title="Estimador",
     description=(
-        "Servicio que recibe la transcripción de una reunión y devuelve una "
-        "estimación de software generada por un LLM. Arquitectura CAG: el contexto "
-        "estático (ejemplos de estimaciones previas) se inyecta en cada llamada."
+        "Servicio de estimación de software. Estimación por formulario (parámetros "
+        "tipados) y estimación conversacional con memoria de sesión y adjuntos."
     ),
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.include_router(estimations.router, prefix="/api/v1")
+app.include_router(sessions.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])
