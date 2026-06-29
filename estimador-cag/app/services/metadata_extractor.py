@@ -8,7 +8,7 @@ se expresen de formas distintas, y en varios idiomas. Coste: una llamada extra
 
 import json
 
-from app.services.llm_service import complete
+from app.services.llm_wrapper import LLMResult, complete_observed
 from app.sessions import ProjectMetadata
 
 _EXTRACTOR_SYSTEM = """You extract structured project facts from a software estimation conversation.
@@ -24,7 +24,10 @@ clearly changes them, and union the technologies. Do not invent facts. Output JS
 
 def extract_metadata(
     current: ProjectMetadata, transcript: str, estimation: str
-) -> ProjectMetadata:
+) -> tuple[ProjectMetadata, LLMResult | None]:
+    """Devuelve la metadata actualizada y el `LLMResult` de la llamada al
+    extractor (o `None` si falla), para poder contabilizar su coste en la
+    observación del turno."""
     user = (
         f"CURRENT metadata (JSON):\n{current.model_dump_json()}\n\n"
         f"New transcript:\n{transcript}\n\n"
@@ -32,10 +35,12 @@ def extract_metadata(
         "Return the updated metadata as JSON."
     )
     try:
-        raw = complete(_EXTRACTOR_SYSTEM, [{"role": "user", "content": user}], max_tokens=400)
-        data = json.loads(_extract_json(raw))
+        result = complete_observed(
+            _EXTRACTOR_SYSTEM, [{"role": "user", "content": user}], max_tokens=400
+        )
+        data = json.loads(_extract_json(result.text))
     except Exception:
-        return current
+        return current, None
 
     merged = current.model_dump()
     for key in ("project_name", "assumed_team_size", "agreed_scope"):
@@ -46,9 +51,9 @@ def extract_metadata(
     merged["mentioned_technologies"] = sorted(techs)
 
     try:
-        return ProjectMetadata(**merged)
+        return ProjectMetadata(**merged), result
     except Exception:
-        return current
+        return current, result
 
 
 def _extract_json(raw: str) -> str:

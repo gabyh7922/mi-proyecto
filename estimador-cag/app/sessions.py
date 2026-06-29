@@ -59,6 +59,10 @@ class Session:
     session_id: str
     history: ConversationHistory = field(default_factory=ConversationHistory)
     metadata: ProjectMetadata = field(default_factory=ProjectMetadata)
+    # Observabilidad por turno (Bloque 1 del stress test). El runner las lee vía
+    # GET /sessions/{id} sin tener que parsear logs.
+    turn_count: int = 0
+    last_turn_observed: dict | None = None
 
 
 _SESSIONS: dict[str, Session] = {}

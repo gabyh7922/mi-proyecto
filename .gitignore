@@ -14,3 +14,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Stress test: los PDFs sintéticos son deterministas, se regeneran con
+# `uv run python -m evals.stress.fixtures.build_pdfs` (no se comitean).
+estimador-cag/evals/stress/fixtures/*.pdf

@@ -14,7 +14,15 @@ from httpx import ASGITransport
 
 import app.services.session_service as session_service
 from app.main import app
+from app.services.llm_wrapper import LLMResult
 from app.sessions import ConversationHistory, ProjectMetadata
+
+
+def _fake_result(text: str) -> LLMResult:
+    return LLMResult(
+        text=text, latency_ms=1.0, tokens_in=10, tokens_out=5,
+        cost_usd=0.0, model="fake", provider="fake",
+    )
 
 
 def _make_docx(text: str) -> bytes:
@@ -31,16 +39,19 @@ def _client() -> httpx.AsyncClient:
 
 # --- Test 1: dos peticiones enlazadas actualizan project_metadata ---
 async def test_metadata_updates_across_two_turns(monkeypatch):
-    monkeypatch.setattr(session_service, "complete", lambda *a, **k: "ESTIMATE: 100h")
+    monkeypatch.setattr(
+        session_service, "complete_observed", lambda *a, **k: _fake_result("ESTIMATE: 100h")
+    )
 
     def fake_extract(current: ProjectMetadata, transcript, estimation):
         techs = current.mentioned_technologies + [f"Tech{len(current.mentioned_technologies) + 1}"]
-        return ProjectMetadata(
+        updated = ProjectMetadata(
             project_name="DemoProject",
             assumed_team_size=(current.assumed_team_size or 0) + 1,
             mentioned_technologies=techs,
             agreed_scope=current.agreed_scope,
         )
+        return updated, None
 
     monkeypatch.setattr(session_service, "extract_metadata", fake_extract)
 
@@ -65,10 +76,12 @@ async def test_attachment_content_reaches_prompt(monkeypatch):
 
     def fake_complete(system, messages, max_tokens=1500):
         captured["messages"] = messages
-        return "ESTIMATE based on attachment"
+        return _fake_result("ESTIMATE based on attachment")
 
-    monkeypatch.setattr(session_service, "complete", fake_complete)
-    monkeypatch.setattr(session_service, "extract_metadata", lambda current, *a, **k: current)
+    monkeypatch.setattr(session_service, "complete_observed", fake_complete)
+    monkeypatch.setattr(
+        session_service, "extract_metadata", lambda current, *a, **k: (current, None)
+    )
 
     docx_bytes = _make_docx("SECRET_REQUIREMENT: must integrate with SAP")
 
